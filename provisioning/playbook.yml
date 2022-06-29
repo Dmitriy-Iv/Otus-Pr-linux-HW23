@@ -1,0 +1,102 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+  - name: Set timezone to Europe/Moscow
+    timezone: name=Europe/Moscow
+    
+  - name: Restart chronyd
+    service:
+      name: chronyd
+      state: restarted
+      enabled: true
+
+  - name: install packages
+    yum: name={{ item }} state=latest 
+    with_items:
+      - bind
+      - bind-utils
+      - ntp
+
+  - name: copy transferkey to all servers and the client
+    copy: src=named.zonetransfer.key dest=/etc/named.zonetransfer.key owner=root group=named mode=0644
+
+- hosts: ns01
+  become: yes
+  tasks:
+  - name: copy named.conf
+    copy: src=master-named.conf dest=/etc/named.conf owner=root group=named mode=0640
+
+  - name: copy zones
+    copy: src={{ item }} dest=/etc/named/ owner=root group=named mode=0660
+    with_fileglob:
+      - named.d*
+      - named.newdns.lab
+    notify:
+        - restart named 
+
+  - name: copy resolv.conf to the servers
+    template: src=servers-resolv.j2 dest=/etc/resolv.conf owner=root group=root mode=0644
+  
+  - name: set /etc/named permissions
+    file: path=/etc/named owner=root group=named mode=0670
+
+  - name: ensure named is running and enabled
+    service: name=named state=restarted enabled=yes
+
+  handlers:
+    - name: restart named
+      service:
+        name: named
+        state: restarted
+        enabled: true    
+
+- hosts: ns02
+  become: yes
+  tasks:
+  - name: copy named.conf
+    copy: src=slave-named.conf dest=/etc/named.conf owner=root group=named mode=0640
+
+  - name: copy resolv.conf to the servers
+    template: src=servers-resolv.j2 dest=/etc/resolv.conf owner=root group=root mode=0644
+
+  - name: set /etc/named permissions
+    file: path=/etc/named owner=root group=named mode=0670
+
+  - name: ensure named is running and enabled
+    service: name=named state=restarted enabled=yes
+    
+- hosts: client,client2
+  become: yes
+  tasks:
+  - name: copy resolv.conf to the client
+    copy: src=client-resolv.conf dest=/etc/resolv.conf owner=root group=root mode=0644
+
+  - name: copy rndc conf file
+    copy: src=rndc.conf dest=/home/vagrant/rndc.conf owner=vagrant group=vagrant mode=0644
+
+  - name: copy motd to the client
+    copy: src=client-motd dest=/etc/motd owner=root group=root mode=0644
+
+  - name: Ping Executing
+    shell: "ping -c 2 {{ item.server }}"
+    loop: 
+      - { server: 'www.newdns.lab' }
+      - { server: 'web1.dns.lab' }
+      - { server: 'web2.dns.lab' }      
+    register: command_output
+    ignore_errors: yes
+    no_log: true
+    changed_when: false
+    tags:
+      - test
+
+  - name: Ping Report
+    debug: 
+      msg: "PING SUCCESS"
+    when: item.rc == 0
+    loop: "{{ command_output.results }}"
+    loop_control: 
+      label: "{{ item.item }}"  
+    tags:
+      - test    
